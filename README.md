@@ -16,8 +16,8 @@ graph TD
     A -->|2. XChaCha20-Poly1305| C[加密密文 Ciphertext]
     B & C -->|3. Multipart Upload| D[Google Drive API]
     D -->|4. 儲存至| E[(指定儲存資料夾)]
-    E -->|保存檔案| F[vault_{account}_{timestamp}.vault]
-    E -->|指向最新版| G[vault_{account}_latest.json]
+    E -->|保存檔案| F["vault_{account}_{timestamp}.vault"]
+    E -->|指向最新版| G["vault_{account}_latest.json"]
 ```
 
 1. **瀏覽器端加密 (Client-Side Encryption)**：
