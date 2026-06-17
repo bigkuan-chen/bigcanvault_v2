@@ -54,6 +54,14 @@ export default function VaultPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [pwdStrength, setPwdStrength] = useState<{ score: number; label: string; color: string }>({ score: 0, label: 'Weak', color: '#ef476f' });
+  const [modalStatus, setModalStatus] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+
+  // Reset modal status when modal is closed
+  useEffect(() => {
+    if (!isChangePwdOpen) {
+      setModalStatus(null);
+    }
+  }, [isChangePwdOpen]);
 
   // Mobile Edit Modal state
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -281,12 +289,12 @@ export default function VaultPage() {
     }
 
     if (newPassword !== confirmNewPassword) {
-      setStatusMessage({ type: 'error', text: 'New passwords do not match.' });
+      setModalStatus({ type: 'error', text: 'New passwords do not match.' });
       return;
     }
 
     setIsLoading(true);
-    setStatusMessage({ type: 'info', text: 'Verifying old master password...' });
+    setModalStatus(null); // Clear previous errors if any
 
     try {
       // 1. Verify old password matches current masterKey byte-by-byte
@@ -295,19 +303,17 @@ export default function VaultPage() {
 
       if (!isCorrect) {
         setIsLoading(false);
-        setStatusMessage({ type: 'error', text: 'Incorrect current master password verification failed.' });
+        setModalStatus({ type: 'error', text: 'Incorrect current master password.' });
         return;
       }
 
       // 2. Generate new salt and derive new masterKey
-      setStatusMessage({ type: 'info', text: 'Generating new salt and deriving new master key...' });
       const newSalt = await generateRandomSalt();
       const newOpslimit = 2;
       const newMemlimit = 67108864; // 64MB
       const newDerivedKey = await deriveKey(newPassword, newSalt, newOpslimit, newMemlimit);
 
       // 3. Encrypt and save current records (excluding deleted rows)
-      setStatusMessage({ type: 'info', text: 'Re-encrypting all secrets and uploading...' });
       const recordsToSave = records.filter(r => r.row_status !== 'deleted');
       const accountHash = await sha256(accountName);
 
@@ -349,10 +355,10 @@ export default function VaultPage() {
       setOldPassword('');
       setNewPassword('');
       setConfirmNewPassword('');
-      setStatusMessage({ type: 'success', text: `Master password updated. Created version v${version}.` });
+      setStatusMessage({ type: 'success', text: `Master password updated. Created version v${version} successfully.` });
     } catch (err: any) {
       console.error(err);
-      setStatusMessage({ type: 'error', text: err.message || 'Failed to update master password.' });
+      setModalStatus({ type: 'error', text: err.message || 'Failed to update master password.' });
     } finally {
       setIsLoading(false);
     }
@@ -707,6 +713,12 @@ export default function VaultPage() {
         <div className="dialog-backdrop">
           <div className="dialog-modal">
             <h2 className="cyber-title" style={{ fontSize: '1.25rem', marginBottom: '1.5rem' }}>Change Master Password</h2>
+            
+            {modalStatus && (
+              <div className={`cyber-alert cyber-alert-${modalStatus.type}`} style={{ marginBottom: '1.5rem' }}>
+                {modalStatus.text}
+              </div>
+            )}
             
             <form onSubmit={handleChangeMasterPassword}>
               <div className="cyber-form-group">
