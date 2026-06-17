@@ -2,6 +2,9 @@
 
 ![BigCanVault v2 主畫面](web_screenshot.png)
 
+
+### 🔗 [Live Demo 立即體驗](https://bigcanvault-v2-git-main-eaglechen-9925s-projects.vercel.app/)
+
 BigCanVault v2 是一個最先進的、零知識 (Zero-Knowledge) 的網頁密碼管理器。基於 **Next.js**、**TypeScript** 與 **libsodium-wrappers-sumo (WebAssembly)** 開發，並以使用者個人的 **Google Drive** 作為加密資料儲存空間。所有密鑰衍生、加解密流程皆在瀏覽器端 (Client-side) 完成，確保伺服器端（如 Vercel）絕不經手任何明文密碼或主金鑰。
 
 本專案的前身為 Python / PySide6 的桌面版密碼管理器（現已移至 [desktop/](./desktop/) 目錄）。
