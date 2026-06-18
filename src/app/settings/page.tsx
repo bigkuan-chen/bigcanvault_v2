@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useVault } from '@/context/VaultContext';
-import { saveVaultVersion, getLatestPointer } from '@/lib/gdrive';
+import { saveVaultFile } from '@/lib/gdrive';
 import { serializeVault, deserializeVault, decryptData, fromBase64, sha256 } from '@/lib/crypto';
 import { 
   Cloud, Shield, Clock, Download, Upload, ShieldCheck, 
@@ -40,7 +40,6 @@ export default function SettingsPage() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'error' | 'success' | 'info'; text: string } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-hide alert
   useEffect(() => {
@@ -93,95 +92,7 @@ export default function SettingsPage() {
     }
   };
 
-  // Import Encrypted Backup (.vault file)
-  const handleImportBackup = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setIsLoading(true);
-    setStatusMessage({ type: 'info', text: 'Reading file contents...' });
-
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-      try {
-        const fileContent = event.target?.result as string;
-        const importedVault = JSON.parse(fileContent);
-
-        // 1. Basic Format Validation
-        if (!importedVault.header || !importedVault.payload) {
-          throw new Error('Invalid vault format. File is missing header or payload.');
-        }
-
-        // 2. Decrypt verification using active Master Key
-        setStatusMessage({ type: 'info', text: 'Decrypting backup using your active key...' });
-
-        const header = importedVault.header;
-        const encryption = header.encryption || {};
-        const kdf = header.kdf || {};
-
-        if (kdf.algorithm !== 'Argon2id') {
-          throw new Error(`Unsupported KDF algorithm in backup: ${kdf.algorithm}`);
-        }
-
-        const nonce = await fromBase64(encryption.nonce);
-        const ciphertext = await fromBase64(importedVault.payload.ciphertext);
-
-        // Try decrypting with our current master key
-        const decryptedBytes = await decryptData(ciphertext, nonce, masterKey!);
-        const decryptedStr = new TextDecoder().decode(decryptedBytes);
-        const payloadData = JSON.parse(decryptedStr);
-        const importedRecords = payloadData.records || [];
-
-        // 3. Upload to Google Drive as new version
-        setStatusMessage({ type: 'info', text: 'Uploading verified backup to Google Drive...' });
-
-        const { version, fileId } = await saveVaultVersion(
-          accessToken!,
-          folderId!,
-          accountName,
-          importedVault,
-          existingPointer
-        );
-
-        // 4. Update memory structures
-        setRecords(importedRecords.map((r: any) => ({ ...r, row_status: 'unchanged' })));
-        updateVaultVersionInfo(version, fileId, {
-          fileId,
-          content: {
-            latest_file_id: fileId,
-            latest_version: version,
-            updated_at: new Date().toISOString()
-          }
-        });
-
-        setStatusMessage({ type: 'success', text: `Backup imported successfully! Loaded ${importedRecords.length} records. Created version v${version}.` });
-      } catch (err: any) {
-        console.error(err);
-        setStatusMessage({
-          type: 'error',
-          text: err.message || 'Import failed. The file is either corrupted or encrypted with a different master password.'
-        });
-      } finally {
-        setIsLoading(false);
-        if (fileInputRef.current) {
-          fileInputRef.current.value = '';
-        }
-      }
-    };
-
-    reader.onerror = () => {
-      setIsLoading(false);
-      setStatusMessage({ type: 'error', text: 'Failed to read file.' });
-    };
-
-    reader.readAsText(file);
-  };
 
   return (
     <div className="cyber-container">
@@ -222,26 +133,21 @@ export default function SettingsPage() {
 
               <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(0, 180, 216, 0.1)', paddingBottom: '0.5rem' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Target Directory:</span>
-                <a
-                  href="https://drive.google.com/drive/folders/1cr021U7ziXOvacYn3GbN5_U9B3lta2Zu"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="cyber-mono text-[#90e0ef] hover:underline"
-                >
-                  /folders/1cr021U7...
-                </a>
+                <span className="cyber-mono text-[#90e0ef]">
+                  Hidden App Data Folder
+                </span>
               </div>
 
               {folderId && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', borderBottom: '1px solid rgba(0, 180, 216, 0.1)', paddingBottom: '0.5rem' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>GDrive Folder ID:</span>
+                  <span style={{ color: 'var(--text-muted)' }}>GDrive Space ID:</span>
                   <span className="cyber-mono text-xs" style={{ wordBreak: 'break-all' }}>{folderId}</span>
                 </div>
               )}
 
               <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid rgba(0, 180, 216, 0.1)', paddingBottom: '0.5rem' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Permissions:</span>
-                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>drive.file (App-created files only)</span>
+                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>drive.appdata (Secure Hidden App Data Folder)</span>
               </div>
             </div>
           </div>
@@ -311,32 +217,6 @@ export default function SettingsPage() {
               <Download className="w-4 h-4 mr-2" />
               Export Encrypted Backup
             </button>
-
-            <button
-              onClick={handleImportBackup}
-              className="cyber-button"
-              disabled={isLoading}
-              style={{ flex: 1, minWidth: '200px' }}
-            >
-              <Upload className="w-4 h-4 mr-2" />
-              Import Encrypted Backup
-            </button>
-            
-            {/* Hidden File Input for Import */}
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              style={{ display: 'none' }}
-              accept=".vault,.json"
-            />
-          </div>
-
-          <div style={{ display: 'flex', gap: '0.5rem', background: 'rgba(255,209,102,0.05)', border: '1px dashed rgba(255,209,102,0.3)', borderRadius: '6px', padding: '1rem', marginTop: '1.5rem' }}>
-            <AlertTriangle className="w-5 h-5 text-[#ffd166] flex-shrink-0" />
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>
-              <strong>Caution during import:</strong> Importing a backup overwrites the pointer file. If you import a backup file that contains different or older password lists, your current lists will be replaced by the records in the backup.
-            </div>
           </div>
         </div>
 

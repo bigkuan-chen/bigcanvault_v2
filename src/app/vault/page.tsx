@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useVault, PasswordRecord } from '@/context/VaultContext';
-import { saveVaultVersion } from '@/lib/gdrive';
+import { saveVaultFile } from '@/lib/gdrive';
 import { serializeVault, deriveKey, generateRandomSalt, sha256 } from '@/lib/crypto';
 import { 
   Plus, Save, Lock, Edit3, Key, Copy, Check, Eye, EyeOff, Search, Undo, Trash2, 
@@ -131,9 +131,9 @@ export default function VaultPage() {
   const handleAddRecord = () => {
     const newRecord: PasswordRecord = {
       id: crypto.randomUUID(),
-      website_name: 'New Website',
-      account: 'Username',
-      password: generatePassword(),
+      website_name: '',
+      account: '',
+      password: '',
       description: '',
       row_status: 'new',
       created_at: new Date().toISOString(),
@@ -142,7 +142,7 @@ export default function VaultPage() {
 
     setRecords((prev) => [newRecord, ...prev]);
     setUnsavedChanges(true);
-    setStatusMessage({ type: 'info', text: 'New blank entry created at the top.' });
+    setStatusMessage({ type: 'info', text: 'New blank item created at the top.' });
   };
 
   // Update record fields
@@ -249,29 +249,22 @@ export default function VaultPage() {
         accountHash
       );
 
-      setStatusMessage({ type: 'info', text: 'Uploading new version to Google Drive...' });
+      setStatusMessage({ type: 'info', text: 'Uploading to Google Drive...' });
 
-      // Save version
-      const { version, fileId } = await saveVaultVersion(
+      // Save file
+      const fileId = await saveVaultFile(
         accessToken,
         folderId,
         accountName,
         encryptedVault,
-        existingPointer
+        latestFileId
       );
 
       // Update state
       setRecords(recordsToSave.map(r => ({ ...r, row_status: 'unchanged' })));
       setUnsavedChanges(false);
-      updateVaultVersionInfo(version, fileId, {
-        fileId,
-        content: {
-          latest_file_id: fileId,
-          latest_version: version,
-          updated_at: new Date().toISOString()
-        }
-      });
-      setStatusMessage({ type: 'success', text: `Saved version v${version} successfully!` });
+      updateVaultVersionInfo(1, fileId, null);
+      setStatusMessage({ type: 'success', text: 'Vault changes saved successfully!' });
     } catch (err: any) {
       console.error(err);
       setStatusMessage({ type: 'error', text: err.message || 'Failed to save vault changes.' });
@@ -327,25 +320,18 @@ export default function VaultPage() {
       );
 
       // Save new version to Drive
-      const { version, fileId } = await saveVaultVersion(
+      const fileId = await saveVaultFile(
         accessToken,
         folderId,
         accountName,
         encryptedVault,
-        existingPointer
+        latestFileId
       );
 
       // Update contexts
       updateMasterKey(newDerivedKey);
       updateKdfParams(newSalt, newOpslimit, newMemlimit);
-      updateVaultVersionInfo(version, fileId, {
-        fileId,
-        content: {
-          latest_file_id: fileId,
-          latest_version: version,
-          updated_at: new Date().toISOString()
-        }
-      });
+      updateVaultVersionInfo(1, fileId, null);
       
       setRecords(recordsToSave.map(r => ({ ...r, row_status: 'unchanged' })));
       setUnsavedChanges(false);
@@ -355,7 +341,7 @@ export default function VaultPage() {
       setOldPassword('');
       setNewPassword('');
       setConfirmNewPassword('');
-      setStatusMessage({ type: 'success', text: `Master password updated. Created version v${version} successfully.` });
+      setStatusMessage({ type: 'success', text: 'Master password updated successfully.' });
     } catch (err: any) {
       console.error(err);
       setModalStatus({ type: 'error', text: err.message || 'Failed to update master password.' });
@@ -415,7 +401,7 @@ export default function VaultPage() {
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
             <button onClick={handleAddRecord} className="cyber-button" disabled={isLoading}>
               <Plus className="w-4 h-4" />
-              Add Entry
+              Add Item
             </button>
 
             <button
@@ -495,7 +481,7 @@ export default function VaultPage() {
             {filteredRecords.length === 0 ? (
               <tr>
                 <td colSpan={6} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }} className="cyber-mono">
-                  No secrets found. Click "Add Entry" to begin inserting data.
+                  No secrets found. Click "Add Item" to begin inserting data.
                 </td>
               </tr>
             ) : (
@@ -525,6 +511,7 @@ export default function VaultPage() {
                       value={r.website_name}
                       onChange={(e) => handleUpdateField(r.id, 'website_name', e.target.value)}
                       disabled={isLoading || r.row_status === 'deleted'}
+                      placeholder="e.g. Google"
                     />
                   </td>
 
@@ -537,6 +524,7 @@ export default function VaultPage() {
                       value={r.account}
                       onChange={(e) => handleUpdateField(r.id, 'account', e.target.value)}
                       disabled={isLoading || r.row_status === 'deleted'}
+                      placeholder="e.g. user@gmail.com"
                     />
                   </td>
 
@@ -550,6 +538,7 @@ export default function VaultPage() {
                         value={r.password}
                         onChange={(e) => handleUpdateField(r.id, 'password', e.target.value)}
                         disabled={isLoading || r.row_status === 'deleted'}
+                        placeholder="Password"
                       />
                       <button
                         type="button"
@@ -617,7 +606,7 @@ export default function VaultPage() {
       <div className="cyber-cards-grid">
         {filteredRecords.length === 0 ? (
           <div className="cyber-panel text-center cyber-mono" style={{ color: 'var(--text-muted)' }}>
-            No secrets found. Click "Add Entry" to begin inserting data.
+            No secrets found. Click "Add Item" to begin inserting data.
           </div>
         ) : (
           filteredRecords.map((r) => (
@@ -809,6 +798,7 @@ export default function VaultPage() {
                 className="cyber-input"
                 value={selectedRecord.website_name}
                 onChange={(e) => setSelectedRecord({ ...selectedRecord, website_name: e.target.value })}
+                placeholder="e.g. Google"
               />
             </div>
 
@@ -820,6 +810,7 @@ export default function VaultPage() {
                 className="cyber-input cyber-mono"
                 value={selectedRecord.account}
                 onChange={(e) => setSelectedRecord({ ...selectedRecord, account: e.target.value })}
+                placeholder="e.g. user@gmail.com"
               />
             </div>
 
@@ -832,6 +823,7 @@ export default function VaultPage() {
                   className="cyber-input cyber-mono"
                   value={selectedRecord.password}
                   onChange={(e) => setSelectedRecord({ ...selectedRecord, password: e.target.value })}
+                  placeholder="Password"
                 />
                 <button
                   type="button"

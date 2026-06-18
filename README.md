@@ -33,10 +33,8 @@ graph TD
    - **帳號雜湊**：使用 SHA-256 對標準化的帳號進行雜湊處理，作為密碼庫的擁有者識別碼。
 
 3. **Google Drive 儲存策略 (Google Drive API)**：
-   - 使用 `drive.file` 權限範圍，僅能讀寫本應用程式建立的檔案，確保安全性。
-   - 檔案儲存於特定的 Google Drive 資料夾位置：[folders/1cr021U7ziXOvacYn3GbN5_U9B3lta2Zu](https://drive.google.com/drive/folders/1cr021U7ziXOvacYn3GbN5_U9B3lta2Zu) (ID: `1cr021U7ziXOvacYn3GbN5_U9B3lta2Zu`)。
-   - 加密檔案不可刪除、不可直接取代。每次儲存皆建立全新版本檔：`vault_{account}_{timestamp}.vault`。
-   - 建立最新版本指標檔 `vault_{account}_latest.json`，指向最新的版本檔案 ID。
+   - 使用 `drive.appdata` 權限範圍，僅能存取該帳號底下由本應用程式建立的隱藏資料空間（Application Data Folder），確保極致的資料隱私與安全性，且用戶在自己的 Google Drive 網頁介面上看不到此資料夾，防範誤刪。
+   - 所有資料（新增、修改）皆直接讀寫同一個加密檔案：`bigcanvault_{account}.vault`。不使用多個時間戳記版本備份或額外的指標檔案，確保結構簡潔高效。
 
 ---
 

@@ -21,7 +21,7 @@ export const Header: React.FC = () => {
         {isUnlocked && (
           <div className="cyber-nav-links">
             <span className="cyber-mono text-xs text-[#90e0ef] border border-[#00b4d8]/30 px-2 py-0.5 rounded bg-[#0d111c]">
-              USER: {accountName} (v{currentVersion})
+              USER: {accountName}
             </span>
 
             <Link

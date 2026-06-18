@@ -1,48 +1,30 @@
-const ROOT_FOLDER_NAME = 'PasswordVaultApp';
-
 /**
- * Helper to construct the standardized YYYYMMDD_HHMMSS timestamp.
- */
-export function getTimestamp(): string {
-  const now = new Date();
-  const pad = (num: number) => num.toString().padStart(2, '0');
-  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_` +
-         `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-}
-
-/**
- * Retrieve or create the app root folder 'PasswordVaultApp' on Google Drive.
+ * Retrieve or create the app root folder on Google Drive.
+ * For this application, we use Google Drive's hidden 'appDataFolder'.
  */
 export async function getOrCreateRootFolder(accessToken: string): Promise<string> {
-  // Directly return the specific Google Drive folder ID configured by the user
-  return '1cr021U7ziXOvacYn3GbN5_U9B3lta2Zu';
-}
-
-interface PointerContent {
-  latest_file_id: string;
-  latest_version: number;
-  updated_at: string;
+  return 'appDataFolder';
 }
 
 /**
- * Get the latest pointer file (e.g. vault_{account}_latest.json).
- * Returns the pointer file ID and its parsed content, or null if it doesn't exist.
+ * Get the vault file (e.g. bigcanvault_{account}.vault).
+ * Returns the file ID if it exists, or null if it doesn't.
  */
-export async function getLatestPointer(
+export async function getVaultFile(
   accessToken: string,
-  folderId: string,
+  folderId: string, // 'appDataFolder'
   accountName: string
-): Promise<{ fileId: string; content: PointerContent } | null> {
-  const pointerName = `vault_${accountName}_latest.json`;
-  const query = `name = '${pointerName}' and '${folderId}' in parents and trashed = false`;
-  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name)`;
+): Promise<string | null> {
+  const filename = `bigcanvault_${accountName}.vault`;
+  const query = `name = '${filename}' and '${folderId}' in parents and trashed = false`;
+  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&spaces=appDataFolder&fields=files(id,name)`;
 
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
   if (!response.ok) {
-    throw new Error('Failed to query latest pointer file.');
+    throw new Error('Failed to query vault file.');
   }
 
   const data = await response.json();
@@ -52,19 +34,7 @@ export async function getLatestPointer(
     return null;
   }
 
-  const fileId = files[0].id;
-
-  // Download the pointer content
-  const contentResponse = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-
-  if (!contentResponse.ok) {
-    throw new Error('Failed to download latest pointer details.');
-  }
-
-  const content = await contentResponse.json();
-  return { fileId, content };
+  return files[0].id;
 }
 
 /**
@@ -131,7 +101,7 @@ async function uploadFileMultipart(
 }
 
 /**
- * Update the content of an existing file (used for updating the latest pointer file).
+ * Update the content of an existing file (used to update the vault content).
  */
 async function updateFileMedia(
   accessToken: string,
@@ -151,47 +121,29 @@ async function updateFileMedia(
   });
 
   if (!response.ok) {
-    throw new Error('Failed to update pointer file content.');
+    throw new Error('Failed to update vault file content.');
   }
 }
 
 /**
- * Save a new vault version and update/create the pointer file.
- * Returns the new version number and the new file ID.
+ * Save the vault file (either updates existing or creates new).
+ * Returns the file ID.
  */
-export async function saveVaultVersion(
+export async function saveVaultFile(
   accessToken: string,
   folderId: string,
   accountName: string,
   vaultData: any,
-  existingPointer: { fileId: string; content: PointerContent } | null
-): Promise<{ version: number; fileId: string }> {
-  const nextVersion = existingPointer ? existingPointer.content.latest_version + 1 : 1;
-  const timestamp = getTimestamp();
-  const filename = `vault_${accountName}_${timestamp}.vault`;
+  existingFileId: string | null
+): Promise<string> {
+  const filename = `bigcanvault_${accountName}.vault`;
 
-  // 1. Upload new encrypted versioned vault file
-  const newVaultFileId = await uploadFileMultipart(accessToken, folderId, filename, vaultData);
-
-  // 2. Update or create the pointer file pointing to the new versioned file
-  const pointerContent: PointerContent = {
-    latest_file_id: newVaultFileId,
-    latest_version: nextVersion,
-    updated_at: new Date().toISOString(),
-  };
-
-  const pointerFilename = `vault_${accountName}_latest.json`;
-
-  if (existingPointer) {
-    // Overwrite existing pointer content
-    await updateFileMedia(accessToken, existingPointer.fileId, pointerContent);
+  if (existingFileId) {
+    // Overwrite existing file content
+    await updateFileMedia(accessToken, existingFileId, vaultData);
+    return existingFileId;
   } else {
-    // Create new pointer file
-    await uploadFileMultipart(accessToken, folderId, pointerFilename, pointerContent);
+    // Create new file in appDataFolder
+    return await uploadFileMultipart(accessToken, folderId, filename, vaultData);
   }
-
-  return {
-    version: nextVersion,
-    fileId: newVaultFileId,
-  };
 }

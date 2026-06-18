@@ -2,14 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import { useVault } from '@/context/VaultContext';
-import { getOrCreateRootFolder, getLatestPointer, downloadVaultFile, saveVaultVersion } from '@/lib/gdrive';
+import { getOrCreateRootFolder, getVaultFile, downloadVaultFile, saveVaultFile } from '@/lib/gdrive';
 import { deserializeVault, generateRandomSalt, deriveKey, serializeVault, sha256 } from '@/lib/crypto';
 import { Shield, Key, User, Cloud, HelpCircle, Eye, EyeOff, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 export default function UnlockPage() {
   const {
     googleClientId,
-    setGoogleClientId,
     accessToken,
     setAccessToken,
     isConnectedToGDrive,
@@ -21,7 +20,6 @@ export default function UnlockPage() {
   const [mode, setMode] = useState<'unlock' | 'create'>('unlock');
 
   // Input fields
-  const [localClientId, setLocalClientId] = useState('');
   const [accountName, setAccountName] = useState('');
   const [masterPassword, setMasterPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -32,11 +30,6 @@ export default function UnlockPage() {
   const [statusMessage, setStatusMessage] = useState<{ type: 'error' | 'success' | 'info' | 'warning'; text: string } | null>(null);
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
   const [pendingCreateData, setPendingCreateData] = useState<any>(null);
-
-  // Sync client ID input state
-  useEffect(() => {
-    setLocalClientId(googleClientId);
-  }, [googleClientId]);
 
   // Handle URL locked params (e.g. from logout or idle timeout)
   useEffect(() => {
@@ -65,13 +58,15 @@ export default function UnlockPage() {
 
   // Google OAuth triggers
   const handleConnectGoogle = () => {
-    if (!localClientId) {
-      setStatusMessage({ type: 'error', text: 'Please enter a valid Google Client ID first.' });
+    const activeClientId = googleClientId || process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
+    
+    if (!activeClientId) {
+      setStatusMessage({ 
+        type: 'error', 
+        text: 'Google Client ID is not configured. Please set NEXT_PUBLIC_GOOGLE_CLIENT_ID in your environment variables.' 
+      });
       return;
     }
-    
-    // Save client ID
-    setGoogleClientId(localClientId);
 
     const google = (window as any).google;
     if (!google || !google.accounts || !google.accounts.oauth2) {
@@ -87,8 +82,8 @@ export default function UnlockPage() {
       setStatusMessage({ type: 'info', text: 'Opening Google Login window...' });
       
       const client = google.accounts.oauth2.initTokenClient({
-        client_id: localClientId,
-        scope: 'https://www.googleapis.com/auth/drive.file',
+        client_id: activeClientId,
+        scope: 'https://www.googleapis.com/auth/drive.appdata',
         callback: (response: any) => {
           setIsLoading(false);
           if (response && response.access_token) {
@@ -139,11 +134,11 @@ export default function UnlockPage() {
       // 1. Get or create root folder
       const folderId = await getOrCreateRootFolder(accessToken);
       
-      // 2. Search for the pointer file
+      // 2. Search for the vault file
       setStatusMessage({ type: 'info', text: 'Searching for your vault...' });
-      const pointerResult = await getLatestPointer(accessToken, folderId, normalizedName);
+      const fileId = await getVaultFile(accessToken, folderId, normalizedName);
 
-      if (!pointerResult) {
+      if (!fileId) {
         setIsLoading(false);
         setStatusMessage({
           type: 'error',
@@ -152,9 +147,9 @@ export default function UnlockPage() {
         return;
       }
 
-      // 3. Download versioned vault file
-      setStatusMessage({ type: 'info', text: `Downloading vault version v${pointerResult.content.latest_version}...` });
-      const vaultData = await downloadVaultFile(accessToken, pointerResult.content.latest_file_id);
+      // 3. Download vault file
+      setStatusMessage({ type: 'info', text: 'Downloading vault...' });
+      const vaultData = await downloadVaultFile(accessToken, fileId);
 
       // 4. Derive key and decrypt payload
       setStatusMessage({ type: 'info', text: 'Deriving encryption key using Argon2id (please wait)...' });
@@ -172,9 +167,9 @@ export default function UnlockPage() {
         key,
         records,
         folderId,
-        pointerResult.content.latest_version,
-        pointerResult.content.latest_file_id,
-        pointerResult,
+        1, // version placeholder
+        fileId,
+        null, // pointer details placeholder
         salt,
         opslimit,
         memlimit
@@ -221,16 +216,16 @@ export default function UnlockPage() {
 
     try {
       const folderId = await getOrCreateRootFolder(accessToken);
-      const pointerResult = await getLatestPointer(accessToken, folderId, normalizedName);
+      const fileId = await getVaultFile(accessToken, folderId, normalizedName);
 
-      if (pointerResult) {
+      if (fileId) {
         // Vault already exists! Warn user.
         setIsLoading(false);
         setNeedsConfirmation(true);
-        setPendingCreateData({ folderId, normalizedName, pointerResult });
+        setPendingCreateData({ folderId, normalizedName, fileId });
         setStatusMessage({
           type: 'warning',
-          text: `A vault already exists for "${normalizedName}". Creating a new vault will discard access to existing entries under this account name.`,
+          text: `A vault already exists for "${normalizedName}". Creating a new vault will overwrite the existing entries under this account name.`,
         });
       } else {
         // Vault does not exist, go ahead and create
@@ -246,7 +241,7 @@ export default function UnlockPage() {
   const executeCreateVault = async (
     folderId: string,
     normalizedName: string,
-    existingPointer: any
+    existingFileId: string | null
   ) => {
     setIsLoading(true);
     setStatusMessage({ type: 'info', text: 'Generating safe cryptographic salt...' });
@@ -272,16 +267,13 @@ export default function UnlockPage() {
 
       // 4. Save to Google Drive
       setStatusMessage({ type: 'info', text: 'Uploading new vault structure...' });
-      const saveResult = await saveVaultVersion(
+      const newFileId = await saveVaultFile(
         accessToken!,
         folderId,
         normalizedName,
         vaultData,
-        existingPointer
+        existingFileId
       );
-
-      // Fetch the updated pointer file
-      const updatedPointer = await getLatestPointer(accessToken!, folderId, normalizedName);
 
       setStatusMessage({ type: 'success', text: 'Vault created successfully!' });
 
@@ -290,9 +282,9 @@ export default function UnlockPage() {
         key,
         emptyRecords,
         folderId,
-        saveResult.version,
-        saveResult.fileId,
-        updatedPointer,
+        1, // version placeholder
+        newFileId,
+        null, // pointer details placeholder
         salt,
         opslimit,
         memlimit
@@ -331,40 +323,27 @@ export default function UnlockPage() {
 
         {/* STEP 1: Connect Google Drive */}
         {!isConnectedToGDrive ? (
-          <div>
-            <div className="cyber-form-group">
-              <label className="cyber-label" htmlFor="clientId">Google OAuth Client ID</label>
-              <input
-                id="clientId"
-                type="text"
-                className="cyber-input"
-                placeholder="Paste your Google OAuth Client ID"
-                value={localClientId}
-                onChange={(e) => setLocalClientId(e.target.value)}
-                disabled={isLoading}
-              />
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                Your client ID is stored locally in your browser.
-              </span>
-            </div>
-
+          <div style={{ textAlign: 'center', padding: '1rem 0' }}>
+            <p className="cyber-subtitle" style={{ marginBottom: '2rem', fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+              使用您的google帳號登入操作
+            </p>
             <button
               onClick={handleConnectGoogle}
-              disabled={isLoading || !localClientId}
+              disabled={isLoading}
               className="cyber-button cyber-button-solid"
-              style={{ width: '100%', padding: '0.85rem' }}
+              style={{ 
+                width: '100%', 
+                padding: '1rem', 
+                display: 'flex', 
+                justifyContent: 'center', 
+                alignItems: 'center', 
+                gap: '0.75rem', 
+                fontSize: '1.05rem' 
+              }}
             >
-              <Cloud className="w-4 h-4" />
-              Connect Google Drive
+              <Cloud className="w-5 h-5" />
+              登入 Google 帳號
             </button>
-
-            <div style={{ marginTop: '1.5rem', padding: '0.75rem', border: '1px dashed var(--border-color)', borderRadius: '6px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-              <div style={{ fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                <HelpCircle className="w-3.5 h-3.5" />
-                How to get a Google Client ID?
-              </div>
-              Go to Google Cloud Console, create a web project, authorize <code>http://localhost:3000</code> as your Javascript origin, enable the Google Drive API, and generate an OAuth 2.0 Web Client ID.
-            </div>
           </div>
         ) : (
           /* STEP 2: Authenticated forms (Unlock or Create) */
@@ -414,7 +393,7 @@ export default function UnlockPage() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', color: 'var(--warning)', fontWeight: 600, fontSize: '0.95rem' }}>
                   <AlertTriangle className="w-5 h-5" />
-                  Overwrite existing pointer?
+                  Overwrite existing file?
                 </div>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>
                   There is already a password vault associated with the account name <strong>{pendingCreateData.normalizedName}</strong>. 
@@ -422,8 +401,7 @@ export default function UnlockPage() {
                 </p>
                 <ul style={{ paddingLeft: '1.25rem', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                   <li>You will lose direct access to the passwords in the old vault.</li>
-                  <li>The old encrypted vault version files will remain intact on your Google Drive.</li>
-                  <li>A brand new empty vault pointer will be initialized.</li>
+                  <li>A brand new empty vault file will be initialized.</li>
                 </ul>
                 <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem' }}>
                   <button
@@ -439,7 +417,7 @@ export default function UnlockPage() {
                     Cancel
                   </button>
                   <button
-                    onClick={() => executeCreateVault(pendingCreateData.folderId, pendingCreateData.normalizedName, pendingCreateData.pointerResult)}
+                    onClick={() => executeCreateVault(pendingCreateData.folderId, pendingCreateData.normalizedName, pendingCreateData.fileId)}
                     className="cyber-button cyber-button-danger"
                     style={{ flex: 1 }}
                     disabled={isLoading}
@@ -469,7 +447,7 @@ export default function UnlockPage() {
                   />
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                     Vault file name will resolve to:{' '}
-                    <code>vault_{getNormalizedAccount(accountName) || '...'}.vault</code>
+                    <code>bigcanvault_{getNormalizedAccount(accountName) || '...'}.vault</code>
                   </span>
                 </div>
 
@@ -556,6 +534,7 @@ export default function UnlockPage() {
                       fontSize: '0.75rem',
                       textDecoration: 'underline',
                       cursor: 'pointer',
+                      backgroundClip: 'padding-box',
                     }}
                     disabled={isLoading}
                   >
