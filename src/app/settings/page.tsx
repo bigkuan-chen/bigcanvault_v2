@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { useVault } from '@/context/VaultContext';
-import { saveVaultFile } from '@/lib/gdrive';
-import { serializeVault, deserializeVault, decryptData, fromBase64, sha256 } from '@/lib/crypto';
+import { saveVaultFile, deleteVaultFile } from '@/lib/gdrive';
+import { serializeVault, deserializeVault, decryptData, fromBase64, sha256, deriveKey } from '@/lib/crypto';
 import { 
   Cloud, Shield, Clock, Download, Upload, ShieldCheck, 
   HelpCircle, Settings, LogOut, CheckCircle2, AlertTriangle, ArrowLeft
@@ -78,7 +78,7 @@ export default function SettingsPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `vault_${accountName}_backup_${new Date().toISOString().split('T')[0]}.vault`;
+      a.download = `bigkuanvault_${accountName}.vault`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -92,7 +92,105 @@ export default function SettingsPage() {
     }
   };
 
+  // Import/Upload Encrypted Backup (.vault file)
+  const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
+    setIsLoading(true);
+    setStatusMessage({ type: 'info', text: 'Reading backup file...' });
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const text = event.target?.result as string;
+        const vaultData = JSON.parse(text);
+
+        // Basic structural validation
+        if (!vaultData || typeof vaultData !== 'object' || !vaultData.header || !vaultData.payload) {
+          throw new Error('Invalid vault file structure. Missing header or payload.');
+        }
+
+        // Save uploaded vault data and file name to sessionStorage
+        sessionStorage.setItem('uploaded_vault_data', JSON.stringify(vaultData));
+        sessionStorage.setItem('uploaded_vault_filename', file.name);
+
+        setStatusMessage({
+          type: 'success',
+          text: 'Backup file uploaded. Logging out to verify security and decrypt...'
+        });
+
+        // Small delay to allow the user to read the message, then lock
+        setTimeout(() => {
+          lockVault('Verifying uploaded backup file');
+        }, 1500);
+      } catch (err: any) {
+        setStatusMessage({ type: 'error', text: err.message || 'Failed to parse backup file.' });
+        setIsLoading(false);
+      }
+    };
+
+    reader.onerror = () => {
+      setStatusMessage({ type: 'error', text: 'Failed to read file.' });
+      setIsLoading(false);
+    };
+
+    reader.readAsText(file);
+  };
+
+  // Delete Vault from Google Drive
+  const handleDeleteVault = async () => {
+    if (!accessToken) {
+      setStatusMessage({ type: 'error', text: 'No active session.' });
+      return;
+    }
+
+    if (!latestFileId) {
+      setStatusMessage({ type: 'error', text: 'No vault file associated with this session to delete.' });
+      return;
+    }
+
+    const enteredPassword = window.prompt('Please enter your Master Password to verify vault ownership before deletion:');
+    if (enteredPassword === null) return; // cancelled
+
+    setIsLoading(true);
+    setStatusMessage({ type: 'info', text: 'Verifying password...' });
+
+    try {
+      if (!kdfParams || !masterKey) {
+        throw new Error('Encryption context is missing.');
+      }
+
+      const derived = await deriveKey(enteredPassword, kdfParams.salt, kdfParams.opslimit, kdfParams.memlimit);
+      const isCorrect = derived.every((val, i) => val === masterKey[i]);
+
+      if (!isCorrect) {
+        throw new Error('Incorrect master password. Deletion cancelled.');
+      }
+
+      const confirmDelete = window.confirm(
+        'Are you sure you want to permanently delete your vault file from Google Drive?\n\n' +
+        'This action is irreversible and all your passwords in this vault will be lost!'
+      );
+
+      if (!confirmDelete) {
+        setIsLoading(false);
+        setStatusMessage(null);
+        return;
+      }
+
+      setStatusMessage({ type: 'info', text: 'Deleting vault file from Google Drive...' });
+      await deleteVaultFile(accessToken, latestFileId);
+      setStatusMessage({ type: 'success', text: 'Vault deleted successfully. Logging out...' });
+      
+      setTimeout(() => {
+        lockVault('Vault deleted from Google Drive');
+      }, 1500);
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to delete vault file.' });
+      setIsLoading(false);
+    }
+  };
 
   return (
     <div className="cyber-container">
@@ -216,6 +314,42 @@ export default function SettingsPage() {
             >
               <Download className="w-4 h-4 mr-2" />
               Export Encrypted Backup
+            </button>
+            <label className="cyber-button" style={{ flex: 1, minWidth: '200px', cursor: isLoading ? 'not-allowed' : 'pointer' }}>
+              <Upload className="w-4 h-4 mr-2" />
+              Upload Encrypted Backup
+              <input
+                type="file"
+                accept=".vault"
+                onChange={handleImportBackup}
+                disabled={isLoading}
+                style={{ display: 'none' }}
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* Row 3: Danger Zone */}
+        <div className="cyber-panel" style={{ borderColor: 'var(--danger)', boxShadow: '0 0 15px var(--danger-glow)' }}>
+          <h2 className="cyber-title" style={{ fontSize: '1.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', color: 'var(--danger)' }}>
+            <AlertTriangle className="text-[#ef476f] w-5 h-5" />
+            Danger Zone
+          </h2>
+          
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: 1.5 }}>
+            Deleting your vault file from Google Drive is a permanent action.
+            Once deleted, all password records associated with this account name will be lost forever.
+          </p>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem' }}>
+            <button
+              onClick={handleDeleteVault}
+              className="cyber-button cyber-button-danger"
+              disabled={isLoading}
+              style={{ flex: 1, minWidth: '200px' }}
+            >
+              <AlertTriangle className="w-4 h-4 mr-2" />
+              Delete Vault from Google Drive
             </button>
           </div>
         </div>

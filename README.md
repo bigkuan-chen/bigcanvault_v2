@@ -19,8 +19,7 @@ graph TD
     A -->|2. XChaCha20-Poly1305| C[加密密文 Ciphertext]
     B & C -->|3. Multipart Upload| D[Google Drive API]
     D -->|4. 儲存至| E[(指定儲存資料夾)]
-    E -->|保存檔案| F["vault_{account}_{timestamp}.vault"]
-    E -->|指向最新版| G["vault_{account}_latest.json"]
+    E -->|保存檔案| F["bigkuanvault_{account}.vault"]
 ```
 
 1. **瀏覽器端加密 (Client-Side Encryption)**：
@@ -34,25 +33,45 @@ graph TD
 
 3. **Google Drive 儲存策略 (Google Drive API)**：
    - 使用 `drive.appdata` 權限範圍，僅能存取該帳號底下由本應用程式建立的隱藏資料空間（Application Data Folder），確保極致的資料隱私與安全性，且用戶在自己的 Google Drive 網頁介面上看不到此資料夾，防範誤刪。
-   - 所有資料（新增、修改）皆直接讀寫同一個加密檔案：`bigcanvault_{account}.vault`。不使用多個時間戳記版本備份或額外的指標檔案，確保結構簡潔高效。
+   - 所有資料（新增、修改）皆直接讀寫同一個加密檔案：`bigkuanvault_{account}.vault`。不使用多個時間戳記版本備份或額外的指標檔案，確保結構簡潔高效。
 
 ---
 
 ## 主要功能 (Core Features)
 
 - **主安全閘道 (Security Gateway)**：
-  - 連接 Google Drive（輸入自訂的 Google Client ID，以維持完全隱私）。
-  - 解密既有 Vault 或初始化新 Vault。
+  - **連接 Google Drive**：輸入自訂的 Google Client ID，以維持完全隱私。
+  - **解密既有密碼庫**：輸入正確的帳號名稱與主密碼進行本地解密。
+  - **初始化新密碼庫**：如果帳號尚未建立加密庫，可直接初始化全新空密碼庫。
+  - **覆蓋驗證機制 (Overwrite Protection)**：在「新增密碼庫」時，若系統發現雲端已存在同名檔案，會強制要求進行解密驗證。只有提供正確的舊密碼並解密驗證成功後，系統才允許顯示確認覆蓋提示。若密碼不正確，則拒絕顯示覆蓋提示並丟出錯誤訊息，保障資料不被他人或自己因誤填而任意清除。
+
+- **備份、災難復原與安全性 (Backup & Disaster Recovery)**：
+  - **匯出加密備份 (Export Encrypted Backup)**：在「系統設定」中，可將目前記憶體中的密碼庫匯出下載至本地端。匯出的檔名依系統規範命名為 `bigkuanvault_{accountName}.vault`，且不會附加任何額外的時間戳記或多餘字元。
+  - **上傳/匯入加密備份 (Upload/Import Encrypted Backup)**：
+    - 使用者可直接上傳本地的 `.vault` 備份檔。
+    - 上傳後，系統為保障安全性會強制將使用者登出，引導至解密登入介面。
+    - 登入時，系統會先使用主密碼解密上傳的檔案內容，解密失敗即拋出錯誤。
+    - 解密成功後，系統會比對帳號雜湊值（SHA-256 Owner Hash）是否與您輸入的帳號相符，不符即拋出錯誤。
+    - 解密與帳號驗證皆通過後，系統會檢查備份檔名是否符合系統規範 `bigkuanvault_{accountName}.vault`。如果不相符（例如被使用者重新命名過），系統會**自動修改為標準檔名**，隨後將其載入至主畫面並同步上傳覆蓋至個人隱藏資料夾（Google Drive AppDataFolder）。
+  - **安全刪除雲端加密檔 (Delete Vault from Google Drive)**：
+    - 在「系統設定」中設有「Danger Zone」，提供刪除雲端密碼庫檔案的功能。
+    - 為防止誤刪，此功能要求使用者必須**輸入主密碼進行二階段解密驗證**，驗證無誤並經過二次確認後，系統才會向 Google Drive 送出 `DELETE` 請求，並自動清除本地 Session 且登出。
+
+- **舊版檔名自動相容與遷移 (Legacy Filename Migration)**：
+  - 當使用者登入時，系統會自動在個人的 Google Drive 中同時查詢新版檔名 `bigkuanvault_{account}.vault` 與舊版檔名 `bigcanvault_{account}.vault`。
+  - 如果只找到舊版檔名，系統會先對其進行解密，解密成功後**自動且無感地將雲端檔案重新命名（PATCH）為新版檔名**，完美相容舊版使用者的資料，不影響任何現有密碼庫的使用。
+
 - **密碼庫主格 (Password Grid)**：
   - 支援網頁名稱、帳號、密碼 (預設遮罩)、與備註。
   - **自動清除剪貼簿**：複製密碼後，30 秒自動清空剪貼簿，保障安全。
   - **密碼產生器**：點擊按鈕即可隨機產生高強度的安全密碼。
+
 - **行動裝置友善 (Mobile Friendly)**：
   - 偵測螢幕寬度，桌上型電腦顯示 TanStack 風格 Table，手機則轉換為 Card List 及編輯對話框。
+
 - **系統設定 (System Settings)**：
   - 設定閒置自動鎖定時間 (Auto-Lock Timeout) 確保設備遺失時的安全性。
-  - 匯出加密備份 (Export Encrypted Backup)：可下載 `.vault` 加密檔案到本機。
-  - 匯入加密備份 (Import Encrypted Backup)：驗證密碼一致性後上傳至雲端作為新版本。
+  - 隨時可以一鍵強制鎖定。
 
 ---
 

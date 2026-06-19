@@ -7,16 +7,44 @@ export async function getOrCreateRootFolder(accessToken: string): Promise<string
 }
 
 /**
- * Get the vault file (e.g. bigcanvault_{account}.vault).
+/**
+ * Rename a file on Google Drive.
+ */
+export async function renameVaultFile(
+  accessToken: string,
+  fileId: string,
+  newFilename: string
+): Promise<void> {
+  const url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name: newFilename }),
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to rename vault file on Google Drive.');
+  }
+}
+
+/**
+ * Get the vault file (e.g. bigkuanvault_{account}.vault).
  * Returns the file ID if it exists, or null if it doesn't.
+ * Automatically handles migration from legacy bigcanvault_{account}.vault filenames.
  */
 export async function getVaultFile(
   accessToken: string,
   folderId: string, // 'appDataFolder'
   accountName: string
 ): Promise<string | null> {
-  const filename = `bigcanvault_${accountName}.vault`;
-  const query = `name = '${filename}' and '${folderId}' in parents and trashed = false`;
+  const newFilename = `bigkuanvault_${accountName}.vault`;
+  const oldFilename = `bigcanvault_${accountName}.vault`;
+
+  // Query Google Drive for either the new or old filename
+  const query = `(name = '${newFilename}' or name = '${oldFilename}') and '${folderId}' in parents and trashed = false`;
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&spaces=appDataFolder&fields=files(id,name)`;
 
   const response = await fetch(url, {
@@ -34,7 +62,18 @@ export async function getVaultFile(
     return null;
   }
 
-  return files[0].id;
+  const foundFile = files[0];
+  if (foundFile.name === oldFilename) {
+    // Transparently rename the file on Google Drive to match the new naming rules
+    try {
+      await renameVaultFile(accessToken, foundFile.id, newFilename);
+      console.log(`Transparently migrated ${oldFilename} to ${newFilename} on Google Drive.`);
+    } catch (err) {
+      console.error('Failed to automatically migrate legacy vault filename:', err);
+    }
+  }
+
+  return foundFile.id;
 }
 
 /**
@@ -136,7 +175,7 @@ export async function saveVaultFile(
   vaultData: any,
   existingFileId: string | null
 ): Promise<string> {
-  const filename = `bigcanvault_${accountName}.vault`;
+  const filename = `bigkuanvault_${accountName}.vault`;
 
   if (existingFileId) {
     // Overwrite existing file content
@@ -147,3 +186,20 @@ export async function saveVaultFile(
     return await uploadFileMultipart(accessToken, folderId, filename, vaultData);
   }
 }
+
+/**
+ * Delete a vault file by its ID.
+ */
+export async function deleteVaultFile(accessToken: string, fileId: string): Promise<void> {
+  const url = `https://www.googleapis.com/drive/v3/files/${fileId}`;
+  
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!response.ok) {
+    throw new Error('Failed to delete vault file from Google Drive.');
+  }
+}
+

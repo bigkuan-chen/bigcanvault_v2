@@ -31,6 +31,38 @@ export default function UnlockPage() {
   const [needsConfirmation, setNeedsConfirmation] = useState(false);
   const [pendingCreateData, setPendingCreateData] = useState<any>(null);
 
+  // Pending import backup state
+  const [pendingUploadData, setPendingUploadData] = useState<any>(null);
+  const [pendingUploadFilename, setPendingUploadFilename] = useState<string>('');
+
+  // Load pending upload data from sessionStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const dataStr = sessionStorage.getItem('uploaded_vault_data');
+      const filename = sessionStorage.getItem('uploaded_vault_filename');
+      if (dataStr && filename) {
+        try {
+          const parsed = JSON.parse(dataStr);
+          setPendingUploadData(parsed);
+          setPendingUploadFilename(filename);
+          setMode('unlock');
+        } catch (e) {
+          console.error("Failed to parse uploaded vault data from sessionStorage:", e);
+          sessionStorage.removeItem('uploaded_vault_data');
+          sessionStorage.removeItem('uploaded_vault_filename');
+        }
+      }
+    }
+  }, []);
+
+  const handleCancelImport = () => {
+    sessionStorage.removeItem('uploaded_vault_data');
+    sessionStorage.removeItem('uploaded_vault_filename');
+    setPendingUploadData(null);
+    setPendingUploadFilename('');
+    setStatusMessage({ type: 'info', text: 'Import cancelled. Restored normal login.' });
+  };
+
   // Handle URL locked params (e.g. from logout or idle timeout)
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -127,6 +159,86 @@ export default function UnlockPage() {
       return;
     }
 
+    if (pendingUploadData) {
+      setIsLoading(true);
+      setStatusMessage({ type: 'info', text: 'Deriving encryption key using Argon2id (please wait)...' });
+
+      // Allow UI thread to update before CPU intensive Argon2id
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      try {
+        // 1. Decrypt uploaded backup data
+        const { records, key, salt, opslimit, memlimit } = await deserializeVault(pendingUploadData, masterPassword);
+
+        // 2. Validate that the account name matches the owner hash in the vault header
+        const enteredHash = await sha256(normalizedName);
+        const ownerHashInVault = pendingUploadData.header?.owner?.account_name_hash;
+        if (ownerHashInVault && ownerHashInVault !== enteredHash) {
+          throw new Error('Account name does not match the vault owner hash.');
+        }
+
+        setStatusMessage({ type: 'success', text: 'Vault decrypted successfully!' });
+
+        // 3. Check filename matches rules: `bigkuanvault_${normalizedAccountName}.vault`
+        const expectedFilename = `bigkuanvault_${normalizedName}.vault`;
+        let actualFilename = pendingUploadFilename;
+        if (actualFilename !== expectedFilename) {
+          actualFilename = expectedFilename;
+          setStatusMessage({
+            type: 'warning',
+            text: `Filename adjusted to match system rules: ${expectedFilename}`
+          });
+          // Wait a bit to let user see notice
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+        }
+
+        setStatusMessage({ type: 'info', text: 'Uploading to Google Drive personal hidden folder...' });
+
+        // 4. Get root folder and check if a file already exists with this name on Google Drive
+        const folderId = await getOrCreateRootFolder(accessToken);
+        const fileId = await getVaultFile(accessToken, folderId, normalizedName);
+
+        // 5. Upload/save file to GDrive (updates existing or uploads as new)
+        const finalFileId = await saveVaultFile(
+          accessToken,
+          folderId,
+          normalizedName,
+          pendingUploadData,
+          fileId
+        );
+
+        // Clear import state
+        sessionStorage.removeItem('uploaded_vault_data');
+        sessionStorage.removeItem('uploaded_vault_filename');
+        setPendingUploadData(null);
+        setPendingUploadFilename('');
+
+        setStatusMessage({ type: 'success', text: 'Vault imported and synced to cloud!' });
+
+        // 6. Unlock context and redirect
+        unlockVault(
+          normalizedName,
+          key,
+          records,
+          folderId,
+          1, // version placeholder
+          finalFileId,
+          null, // pointer details placeholder
+          salt,
+          opslimit,
+          memlimit
+        );
+      } catch (err: any) {
+        setIsLoading(false);
+        console.error(err);
+        setStatusMessage({
+          type: 'error',
+          text: err.message || 'Incorrect password or account name hash mismatch. Unable to decrypt.',
+        });
+      }
+      return;
+    }
+
     setIsLoading(true);
     setStatusMessage({ type: 'info', text: 'Connecting to Google Drive...' });
 
@@ -219,13 +331,29 @@ export default function UnlockPage() {
       const fileId = await getVaultFile(accessToken, folderId, normalizedName);
 
       if (fileId) {
-        // Vault already exists! Warn user.
+        // Vault already exists! Download and verify decryption first.
+        setStatusMessage({ type: 'info', text: 'Vault exists. Downloading to verify password...' });
+        const existingVaultData = await downloadVaultFile(accessToken, fileId);
+
+        setStatusMessage({ type: 'info', text: 'Verifying password against existing vault...' });
+        try {
+          await deserializeVault(existingVaultData, masterPassword);
+        } catch (decryptErr) {
+          setIsLoading(false);
+          setStatusMessage({
+            type: 'error',
+            text: 'Verification failed: The entered master password cannot decrypt the existing vault. You must provide the correct password to overwrite it.',
+          });
+          return;
+        }
+
+        // Decryption verified! Now ask for confirmation.
         setIsLoading(false);
         setNeedsConfirmation(true);
         setPendingCreateData({ folderId, normalizedName, fileId });
         setStatusMessage({
           type: 'warning',
-          text: `A vault already exists for "${normalizedName}". Creating a new vault will overwrite the existing entries under this account name.`,
+          text: `Decryption verified. A vault already exists for "${normalizedName}". Creating a new vault will overwrite the existing entries under this account name.`,
         });
       } else {
         // Vault does not exist, go ahead and create
@@ -244,9 +372,21 @@ export default function UnlockPage() {
     existingFileId: string | null
   ) => {
     setIsLoading(true);
-    setStatusMessage({ type: 'info', text: 'Generating safe cryptographic salt...' });
 
     try {
+      if (existingFileId) {
+        setStatusMessage({ type: 'info', text: 'Downloading existing vault to verify decryption...' });
+        const existingVaultData = await downloadVaultFile(accessToken!, existingFileId);
+
+        setStatusMessage({ type: 'info', text: 'Verifying password against existing vault...' });
+        try {
+          await deserializeVault(existingVaultData, masterPassword);
+        } catch (decryptErr) {
+          throw new Error('Verification failed: The entered master password cannot decrypt the existing vault. You must be able to decrypt the existing vault to overwrite it.');
+        }
+      }
+
+      setStatusMessage({ type: 'info', text: 'Generating safe cryptographic salt...' });
       // 1. Generate salt and derive key
       const salt = await generateRandomSalt();
       
@@ -348,44 +488,67 @@ export default function UnlockPage() {
         ) : (
           /* STEP 2: Authenticated forms (Unlock or Create) */
           <div>
-            {/* Toggle Modes */}
-            {!needsConfirmation && (
-              <div style={{ display: 'flex', border: '1px solid var(--border-color)', borderRadius: '6px', marginBottom: '1.5rem', overflow: 'hidden' }}>
+            {pendingUploadData ? (
+              <div className="cyber-alert cyber-alert-warning" style={{ marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <AlertTriangle className="w-5 h-5 text-[#ffd166]" />
+                  <span>Pending Backup Import</span>
+                </div>
+                <p style={{ fontSize: '0.85rem', lineHeight: 1.4 }}>
+                  File: <strong>{pendingUploadFilename}</strong>
+                  <br />
+                  Please input the Account Name and Master Password to decrypt and import this vault database.
+                </p>
                 <button
-                  onClick={() => { setMode('unlock'); setStatusMessage(null); }}
-                  className={`cyber-mono`}
-                  style={{
-                    flex: 1,
-                    padding: '0.5rem',
-                    background: mode === 'unlock' ? 'var(--primary)' : 'transparent',
-                    color: mode === 'unlock' ? 'var(--bg-dark)' : 'var(--text-secondary)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem',
-                    fontWeight: 600,
-                  }}
+                  type="button"
+                  onClick={handleCancelImport}
+                  className="cyber-button"
                   disabled={isLoading}
+                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', alignSelf: 'flex-start' }}
                 >
-                  UNLOCK VAULT
-                </button>
-                <button
-                  onClick={() => { setMode('create'); setStatusMessage(null); }}
-                  className={`cyber-mono`}
-                  style={{
-                    flex: 1,
-                    padding: '0.5rem',
-                    background: mode === 'create' ? 'var(--primary)' : 'transparent',
-                    color: mode === 'create' ? 'var(--bg-dark)' : 'var(--text-secondary)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontSize: '0.85rem',
-                    fontWeight: 600,
-                  }}
-                  disabled={isLoading}
-                >
-                  CREATE NEW
+                  Cancel Import
                 </button>
               </div>
+            ) : (
+              /* Toggle Modes */
+              !needsConfirmation && (
+                <div style={{ display: 'flex', border: '1px solid var(--border-color)', borderRadius: '6px', marginBottom: '1.5rem', overflow: 'hidden' }}>
+                  <button
+                    onClick={() => { setMode('unlock'); setStatusMessage(null); }}
+                    className={`cyber-mono`}
+                    style={{
+                      flex: 1,
+                      padding: '0.5rem',
+                      background: mode === 'unlock' ? 'var(--primary)' : 'transparent',
+                      color: mode === 'unlock' ? 'var(--bg-dark)' : 'var(--text-secondary)',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                    }}
+                    disabled={isLoading}
+                  >
+                    UNLOCK VAULT
+                  </button>
+                  <button
+                    onClick={() => { setMode('create'); setStatusMessage(null); }}
+                    className={`cyber-mono`}
+                    style={{
+                      flex: 1,
+                      padding: '0.5rem',
+                      background: mode === 'create' ? 'var(--primary)' : 'transparent',
+                      color: mode === 'create' ? 'var(--bg-dark)' : 'var(--text-secondary)',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                    }}
+                    disabled={isLoading}
+                  >
+                    CREATE NEW
+                  </button>
+                </div>
+              )
             )}
 
             {/* Overwrite Confirmation view */}
@@ -447,7 +610,7 @@ export default function UnlockPage() {
                   />
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                     Vault file name will resolve to:{' '}
-                    <code>bigcanvault_{getNormalizedAccount(accountName) || '...'}.vault</code>
+                    <code>bigkuanvault_{getNormalizedAccount(accountName) || '...'}.vault</code>
                   </span>
                 </div>
 
@@ -515,6 +678,8 @@ export default function UnlockPage() {
                 >
                   {isLoading ? (
                     <span className="cyber-mono">PROCESSING...</span>
+                  ) : pendingUploadData ? (
+                    <span className="cyber-mono">DECRYPT & IMPORT VAULT</span>
                   ) : mode === 'unlock' ? (
                     <span className="cyber-mono">DECRYPT VAULT</span>
                   ) : (
